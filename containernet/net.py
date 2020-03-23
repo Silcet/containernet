@@ -132,7 +132,7 @@ SAP_PREFIX = 'sap.'
 class Containernet( Mininet_wifi ):
     "Network emulation with hosts spawned in network namespaces."
 
-    def __init__( self ):
+    def __init__( self, *args, **kwargs ):
         """Create Mininet object.
            topo: Topo (topology) object or None
            switch: default Switch class
@@ -150,7 +150,7 @@ class Containernet( Mininet_wifi ):
            autoPinCpus: pin hosts to (real) cores (requires CPULimitedHost)?
            listenPort: base listening port to open; will be incremented for
                each additional switch in the net if inNamespace=False"""
-        super(Containernet, self).__init__()
+        super(Containernet, self).__init__(*args, **kwargs)
         self.SAPswitches = {}
         # Mininet_wifi.init()  # Initialize Mininet if necessary
 
