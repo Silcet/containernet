@@ -574,7 +574,8 @@ class DockerSta ( Station ):
     We use the docker-py client library to control docker.
     """
 
-    def __init__(self, name, dimage, dcmd=None, **kwargs):
+    def __init__(self, name, dimage=None, dcmd=None, build_params={},
+                 **kwargs):
         """
         Creates a Docker container as Mininet host.
 
@@ -619,6 +620,10 @@ class DockerSta ( Station ):
                      'port_bindings': {},
                      'ports': [],
                      'dns': [],
+                     'ipc_mode': None,
+                     'devices': [],
+                     'cap_add': [],
+                     'sysctls': {}
                      }
         defaults.update( kwargs )
 
@@ -641,13 +646,30 @@ class DockerSta ( Station ):
         self.publish_all_ports = defaults['publish_all_ports']
         self.port_bindings = defaults['port_bindings']
         self.dns = defaults['dns']
+        self.ipc_mode = defaults['ipc_mode']
+        self.devices = defaults['devices']
+        self.cap_add = defaults['cap_add']
+        self.sysctls = defaults['sysctls']
 
         # setup docker client
         # self.dcli = docker.APIClient(base_url='unix://var/run/docker.sock')
-        self.dcli = docker.from_env().api
+        self.d_client = docker.from_env()
+        self.dcli = self.d_client.api
+
+        _id = None
+        if build_params.get("path", None):
+            if not build_params.get("tag", None):
+                if dimage:
+                    build_params["tag"] = dimage
+            _id, output = self.build(**build_params)
+            dimage = _id
+            self.dimage = _id
+            info("Docker image built: id: {},  {}. Output:\n".format(
+                _id, build_params.get("tag", None)))
+            info(output)
 
         # pull image if it does not exist
-        self._check_image_exists(dimage, True)
+        self._check_image_exists(dimage, True, _id=None)
 
         # for DEBUG
         debug("Created docker container object %s\n" % name)
@@ -656,7 +678,7 @@ class DockerSta ( Station ):
         info("%s: kwargs %s\n" % (name, str(kwargs)))
 
         # creats host config for container
-        # see: https://docker-py.readthedocs.org/en/latest/hostconfig/
+        # see: https://docker-py.readthedocs.io/en/2.0.2/api.html#module-docker.api.container
         hc = self.dcli.create_host_config(
             network_mode=self.network_mode,
             privileged=True,  # we need this to allow mininet network setup
@@ -667,6 +689,11 @@ class DockerSta ( Station ):
             mem_limit=self.resources.get('mem_limit'),
             cpuset_cpus=self.resources.get('cpuset_cpus'),
             dns=self.dns,
+            ipc_mode=self.ipc_mode,  # string
+            devices=self.devices,  # see docker-py docu
+            cap_add=self.cap_add,  # see docker-py docu
+            sysctls=self.sysctls   # see docker-py docu
+            
         )
 
         if kwargs.get("rm", False):
@@ -707,6 +734,14 @@ class DockerSta ( Station ):
 
         # let's initially set our resource limits
         self.update_resources(**self.resources)
+
+        self.master = None
+        self.slave = None
+
+    def build(self, **kwargs):
+        image, output = self.d_client.images.build(**kwargs)
+        output_str = parse_build_output(output)
+        return image.id, output_str
 
     def start(self):
         # Containernet ignores the CMD field of the Dockerfile.
@@ -892,18 +927,21 @@ class DockerSta ( Station ):
             return False;
         return True
 
-    def _check_image_exists(self, imagename, pullImage=False):
+    def _check_image_exists(self, imagename=None, pullImage=False, _id=None):
         # split tag from repository if a tag is specified
-        if ":" in imagename:
-            #If two :, then the first is to specify a port. Otherwise, it must be a tag
-            slices = imagename.split(":")
-            repo = ":".join(slices[0:-1])
-            tag = slices[-1]
+        if imagename:
+            if ":" in imagename:
+                #If two :, then the first is to specify a port. Otherwise, it must be a tag
+                slices = imagename.split(":")
+                repo = ":".join(slices[0:-1])
+                tag = slices[-1]
+            else:
+                repo = imagename
+                tag = "latest"
         else:
-            repo = imagename
-            tag = "latest"
+            repo, tag = "None", "None"
 
-        if self._image_exists(repo, tag):
+        if self._image_exists(repo, tag, _id):
             return True
 
         # image not found
@@ -914,20 +952,22 @@ class DockerSta ( Station ):
         # we couldn't find the image
         return False
 
-    def _image_exists(self, repo, tag):
+    def _image_exists(self, repo, tag, _id=None):
         """
         Checks if the repo:tag image exists locally
         :return: True if the image exists locally. Else false.
         """
-        # filter by repository
-        images = self.dcli.images(repo)
-        imageName = "%s:%s" % (repo, tag)
-
+        print("1: ")
+        images = self.dcli.images()
+        imageTag = "%s:%s" % (repo, tag)
         for image in images:
-            if 'RepoTags' in image:
-                if image['RepoTags'] is None:
-                    return False
-                if imageName in image['RepoTags']:
+            if image.get("RepoTags", None):
+                if imageTag in image.get("RepoTags", []):
+                    debug("Image '{}' exists.\n".format(imageTag))
+                    return True
+            if image.get("Id", None):
+                print("; ".join([str(repo), str(tag), str(_id), str(image.get("Id"))]))
+                if image.get("Id") == _id:
                     return True
         return False
 
@@ -944,13 +984,13 @@ class DockerSta ( Station ):
                 # Collect output of the log for enhanced error feedback
                 message = message + json.dumps(json.loads(line), indent=4)
 
-        except:
+        except BaseException as ex:
             error('*** error: _pull_image: %s:%s failed.' % (repository, tag)
                   + message)
-        if not self._image_exists(repository, tag):
-            error('*** error: _pull_image: %s:%s failed.' % (repository, tag)
-                  + message)
-            return False
+        #if not self._image_exists(repository, tag):
+        #    error('*** error: _pull_image: %s:%s failed.' % (repository, tag)
+        #          + message)
+        #    return False
         return True
 
     def update_resources(self, **kwargs):
@@ -1495,3 +1535,319 @@ class OVSSwitch( Switch ):
 
 
 OVSKernelSwitch = OVSSwitch
+
+
+class OVSBridge( OVSSwitch ):
+    "OVSBridge is an OVSSwitch in standalone/bridge mode"
+
+    def __init__( self, *args, **kwargs ):
+        """stp: enable Spanning Tree Protocol (False)
+           see OVSSwitch for other options"""
+        kwargs.update( failMode='standalone' )
+        OVSSwitch.__init__( self, *args, **kwargs )
+
+        # ip address of this bridge (eg. 10.10.0.1/24)
+        self.ip = kwargs.get('ip')
+
+    def start( self, controllers ):
+        "Start bridge, ignoring controllers argument"
+        OVSSwitch.start( self, controllers=[] )
+
+        # assign an ip address to this switch, so it can connect to the host
+        if self.ip:
+            self.cmd('ip address add', self.ip, 'dev', self.deployed_name)
+            self.cmd('ip link set', self.deployed_name, 'up')
+
+    def connected( self ):
+        "Are we forwarding yet?"
+        if self.stp:
+            status = self.dpctl( 'show' )
+            return 'STP_FORWARD' in status and not 'STP_LEARN' in status
+        else:
+            return True
+
+
+class IVSSwitch( Switch ):
+    "Indigo Virtual Switch"
+
+    def __init__( self, name, verbose=False, **kwargs ):
+        Switch.__init__( self, name, **kwargs )
+        self.verbose = verbose
+
+    @classmethod
+    def setup( cls ):
+        "Make sure IVS is installed"
+        pathCheck( 'ivs-ctl', 'ivs',
+                   moduleName="Indigo Virtual Switch (projectfloodlight.org)" )
+        out, err, exitcode = errRun( 'ivs-ctl show' )
+        if exitcode:
+            error( out + err +
+                   'ivs-ctl exited with code %d\n' % exitcode +
+                   '*** The openvswitch kernel module might '
+                   'not be loaded. Try modprobe openvswitch.\n' )
+            exit( 1 )
+
+    @classmethod
+    def batchShutdown( cls, switches ):
+        "Kill each IVS switch, to be waited on later in stop()"
+        for switch in switches:
+            switch.cmd( 'kill %ivs' )
+        return switches
+
+    def start( self, controllers ):
+        "Start up a new IVS switch"
+        args = ['ivs']
+        args.extend( ['--name', self.name] )
+        args.extend( ['--dpid', self.dpid] )
+        if self.verbose:
+            args.extend( ['--verbose'] )
+        for intf in self.intfs.values():
+            if not intf.IP():
+                args.extend( ['-i', intf.name] )
+        for c in controllers:
+            args.extend( ['-c', '%s:%d' % (c.IP(), c.port)] )
+        if self.listenPort:
+            args.extend( ['--listen', '127.0.0.1:%i' % self.listenPort] )
+        args.append( self.opts )
+
+        logfile = '/tmp/ivs.%s.log' % self.name
+
+        self.cmd( ' '.join(args) + ' >' + logfile + ' 2>&1 </dev/null &' )
+
+    def stop( self, deleteIntfs=True ):
+        """Terminate IVS switch.
+           deleteIntfs: delete interfaces? (True)"""
+        self.cmd( 'kill %ivs' )
+        self.cmd( 'wait' )
+        super( IVSSwitch, self ).stop( deleteIntfs )
+
+    def attach( self, intf ):
+        "Connect a data port"
+        self.cmd( 'ivs-ctl', 'add-port', '--datapath', self.name, intf )
+
+    def detach( self, intf ):
+        "Disconnect a data port"
+        self.cmd( 'ivs-ctl', 'del-port', '--datapath', self.name, intf )
+
+    def dpctl( self, *args ):
+        "Run dpctl command"
+        if not self.listenPort:
+            return "can't run dpctl without passive listening port"
+        return self.cmd( 'ovs-ofctl ' + ' '.join( args ) +
+                         ' tcp:127.0.0.1:%i' % self.listenPort )
+
+
+class Controller( Node ):
+    """A Controller is a Node that is running (or has execed?) an
+       OpenFlow controller."""
+
+    def __init__( self, name, inNamespace=False, command='controller',
+                  cargs='-v ptcp:%d', cdir=None, ip="127.0.0.1",
+                  port=6653, protocol='tcp', **params ):
+        self.command = command
+        self.cargs = cargs
+        self.cdir = cdir
+        # Accept 'ip:port' syntax as shorthand
+        if ':' in ip:
+            ip, port = ip.split( ':' )
+            port = int( port )
+        self.ip = ip
+        self.port = port
+        self.protocol = protocol
+        Node.__init__( self, name, inNamespace=inNamespace,
+                       ip=ip, **params  )
+        self.checkListening()
+
+    def checkListening( self ):
+        "Make sure no controllers are running on our port"
+        # Verify that Telnet is installed first:
+        out, _err, returnCode = errRun( "which telnet" )
+        if 'telnet' not in out or returnCode != 0:
+            raise Exception( "Error running telnet to check for listening "
+                             "controllers; please check that it is "
+                             "installed." )
+        listening = self.cmd( "echo A | telnet -e A %s %d" %
+                              ( self.ip, self.port ) )
+        if 'Connected' in listening:
+            servers = self.cmd( 'netstat -natp' ).split( '\n' )
+            pstr = ':%d ' % self.port
+            clist = servers[ 0:1 ] + [ s for s in servers if pstr in s ]
+            raise Exception( "Please shut down the controller which is"
+                             " running on port %d:\n" % self.port +
+                             '\n'.join( clist ) )
+
+    def start( self ):
+        """Start <controller> <args> on controller.
+           Log to /tmp/cN.log"""
+        pathCheck( self.command )
+        cout = '/tmp/' + self.name + '.log'
+        if self.cdir is not None:
+            self.cmd( 'cd ' + self.cdir )
+        self.cmd( self.command + ' ' + self.cargs % self.port +
+                  ' 1>' + cout + ' 2>' + cout + ' &' )
+        self.execed = False
+
+    def stop( self, *args, **kwargs ):
+        "Stop controller."
+        self.cmd( 'kill %' + self.command )
+        self.cmd( 'wait %' + self.command )
+        super( Controller, self ).stop( *args, **kwargs )
+
+    def IP( self, intf=None ):
+        "Return IP address of the Controller"
+        if self.intfs:
+            ip = Node.IP( self, intf )
+        else:
+            ip = self.ip
+        return ip
+
+    def __repr__( self ):
+        "More informative string representation"
+        return '<%s %s: %s:%s pid=%s> ' % (
+            self.__class__.__name__, self.name,
+            self.IP(), self.port, self.pid )
+
+    @classmethod
+    def isAvailable( cls ):
+        "Is controller available?"
+        return which( 'controller' )
+
+
+class OVSController( Controller ):
+    "Open vSwitch controller"
+    def __init__( self, name, **kwargs ):
+        kwargs.setdefault( 'command', self.isAvailable() or
+                           'ovs-controller' )
+        Controller.__init__( self, name, **kwargs )
+
+    @classmethod
+    def isAvailable( cls ):
+        return (which( 'ovs-controller' ) or
+                which( 'test-controller' ) or
+                which( 'ovs-testcontroller' ))
+
+class NOX( Controller ):
+    "Controller to run a NOX application."
+
+    def __init__( self, name, *noxArgs, **kwargs ):
+        """Init.
+           name: name to give controller
+           noxArgs: arguments (strings) to pass to NOX"""
+        if not noxArgs:
+            warn( 'warning: no NOX modules specified; '
+                  'running packetdump only\n' )
+            noxArgs = [ 'packetdump' ]
+        elif type( noxArgs ) not in ( list, tuple ):
+            noxArgs = [ noxArgs ]
+
+        if 'NOX_CORE_DIR' not in os.environ:
+            exit( 'exiting; please set missing NOX_CORE_DIR env var' )
+        noxCoreDir = os.environ[ 'NOX_CORE_DIR' ]
+
+        Controller.__init__( self, name,
+                             command=noxCoreDir + '/nox_core',
+                             cargs='--libdir=/usr/local/lib -v -i ptcp:%s ' +
+                             ' '.join( noxArgs ),
+                             cdir=noxCoreDir,
+                             **kwargs )
+
+class Ryu( Controller ):
+    "Controller to run Ryu application"
+    def __init__( self, name, *ryuArgs, **kwargs ):
+        """Init.
+        name: name to give controller.
+        ryuArgs: arguments and modules to pass to Ryu"""
+        homeDir = quietRun( 'printenv HOME' ).strip( '\r\n' )
+        ryuCoreDir = '%s/ryu/ryu/app/' % homeDir
+        if not ryuArgs:
+            warn( 'warning: no Ryu modules specified; '
+                  'running simple_switch only\n' )
+            ryuArgs = [ ryuCoreDir + 'simple_switch.py' ]
+        elif type( ryuArgs ) not in ( list, tuple ):
+            ryuArgs = [ ryuArgs ]
+
+        Controller.__init__( self, name,
+                             command='ryu-manager',
+                             cargs='--ofp-tcp-listen-port %s ' +
+                             ' '.join( ryuArgs ),
+                             cdir=ryuCoreDir,
+                             **kwargs )
+
+
+class RemoteController( Controller ):
+    "Controller running outside of Mininet's control."
+
+    def __init__( self, name, ip='127.0.0.1',
+                  port=None, **kwargs):
+        """Init.
+           name: name to give controller
+           ip: the IP address where the remote controller is
+           listening
+           port: the port where the remote controller is listening"""
+        Controller.__init__( self, name, ip=ip, port=port, **kwargs )
+
+    def start( self ):
+        "Overridden to do nothing."
+        return
+
+    def stop( self ):
+        "Overridden to do nothing."
+        return
+
+    def checkListening( self ):
+        "Warn if remote controller is not accessible"
+        if self.port is not None:
+            self.isListening( self.ip, self.port )
+        else:
+            for port in 6653, 6633:
+                if self.isListening( self.ip, port ):
+                    self.port = port
+                    info( "Connecting to remote controller"
+                          " at %s:%d\n" % ( self.ip, self.port ))
+                    break
+
+        if self.port is None:
+            self.port = 6653
+            warn( "Setting remote controller"
+                  " to %s:%d\n" % ( self.ip, self.port ))
+
+    def isListening( self, ip, port ):
+        "Check if a remote controller is listening at a specific ip and port"
+        listening = self.cmd( "echo A | telnet -e A %s %d" % ( ip, port ) )
+        if 'Connected' not in listening:
+            warn( "Unable to contact the remote controller"
+                  " at %s:%d\n" % ( ip, port ) )
+            return False
+        else:
+            return True
+
+
+DefaultControllers = ( Controller, OVSController )
+
+
+def findController( controllers=DefaultControllers ):
+    "Return first available controller from list, if any"
+    for controller in controllers:
+        if controller.isAvailable():
+            return controller
+
+
+def DefaultController( name, controllers=DefaultControllers, **kwargs ):
+    "Find a controller that is available and instantiate it"
+    controller = findController( controllers )
+    if not controller:
+        raise Exception( 'Could not find a default OpenFlow controller' )
+    return controller( name, **kwargs )
+
+
+def NullController( *_args, **_kwargs ):
+    "Nonexistent controller - simply returns None"
+    return None
+
+
+def parse_build_output(output):
+        output_str = ""
+        for line in output:
+            for item in line.values():
+                output_str += str(item)
+        return output_str

@@ -4,7 +4,7 @@ MININET_CON = containernet/*.py
 TEST = containernet/test/*.py
 EXAMPLES = containernet/examples/*.py
 MN = bin/mn
-PYTHON ?= python
+PYTHON ?= python3
 PYMN = $(PYTHON) -B bin/mn
 BIN = $(MN)
 PYSRC = $(MININET) $(MININET_WIFI) $(MININET_CON) $(TEST) $(EXAMPLES) $(BIN)
@@ -19,7 +19,7 @@ PDF = doc/latex/refman.pdf
 
 CFLAGS += -Wall -Wextra
 
-all: codecheck test
+all: test
 
 clean:
 	rm -rf build dist *.egg-info *.pyc $(MNEXEC) $(MANPAGES) $(DOCDIRS)
