@@ -114,10 +114,10 @@ from mn_wifi.net import Mininet_wifi
 from mn_wifi.node import AP, Station, Car, OVSKernelAP
 from mn_wifi.wmediumdConnector import snr, interference
 from mn_wifi.link import wmediumd, _4address, TCWirelessLink, ITSLink,\
-    wifiDirectLink, adhoc, mesh, physicalMesh, physicalWifiDirectLink
+    WifiDirectLink, adhoc, mesh, physicalMesh, PhysicalWifiDirectLink
 from mn_wifi.mobility import Mobility as mob
 from mn_wifi.sixLoWPAN.link import sixLoWPAN
-from mn_wifi.util import netParse6
+from mn_wifi.sixLoWPAN.util import netParse6
 
 
 # Mininet version: should be consistent with README and LICENSE
@@ -532,7 +532,7 @@ class Containernet( Mininet_wifi ):
                          'should be overriden in subclass', self )
 
     def stop( self ):
-        Mininet_wifi.stopGraphParams()
+        Mininet_wifi.stop_graph_params()
         info('*** Removing NAT rules of %i SAPs\n' % len(self.SAPswitches))
         for SAPswitch in self.SAPswitches:
             self.removeSAPNAT(self.SAPswitches[SAPswitch])
