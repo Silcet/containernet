@@ -190,8 +190,9 @@ function mn_wifi_deps {
       echo "Removing Mininet-WiFi dir..."
       rm -r mininet-wifi
     fi
-    sudo git clone --depth=1 https://github.com/intrig-unicamp/mininet-wifi.git
+    sudo git clone https://github.com/intrig-unicamp/mininet-wifi.git
     pushd $MININET_DIR/containernet/mininet-wifi
+    git checkout d36a3224a2a3e748201f79e4df44bf265c5e8886
     sudo util/install.sh -Wlnfv
     sudo PYTHON=${PYTHON} make install
     popd
